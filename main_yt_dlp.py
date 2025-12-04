@@ -16,7 +16,7 @@ if project_root not in sys.path:
 from core.yt_dlp_fetcher import fetch_from_ytdlp
 from core.cookie_manager import CookieRotationManager
 
-from huggingface_hub import HfApi, upload_file, upload_large_folder
+from huggingface_hub import HfApi, upload_file, upload_large_folder, login
 
 TOKEN = ""
 
@@ -32,6 +32,8 @@ lcpt = None
 lcdt = None
 
 api = HfApi(token=TOKEN)
+
+login(TOKEN)
 
 def video_id_to_url(video_id: str) -> str:
     """Преобразует video_id в YouTube URL."""
@@ -110,7 +112,8 @@ def save_progress(processed_ids: set[str]) -> None:
                     path_or_fileobj=PROGRESS_PATH,
                     path_in_repo="progress.json",
                     repo_id=REPO_ID,
-                    repo_type="dataset"
+                    repo_type="dataset",
+                    token=TOKEN
                 )
                 lcpt = t
 
@@ -141,6 +144,8 @@ def get_existing_data_files() -> List[str]:
         token=TOKEN,
     )
 
+    print(f"[yt-dlp] Получен список файлов: {len(l)}")
+
     for file in l:
         if file.startswith("data_") and file.endswith(".json"):
             data_files.append(file)
@@ -163,21 +168,29 @@ def get_next_data_file_path() -> str:
         # Проверяем последний файл
         last_file = existing_files[-1]
         try:
-            import subprocess
-
-            subprocess.run(["wget", "-P", TMP_DIR, f"https://huggingface.co/datasets/{REPO_ID}/resolve/main/{last_file}"])
-
             p = f"{TMP_DIR}/{last_file}"
+
+            if not os.path.exists(p):
+
+                print(f"[yt-dlp] Файл {last_file} не найден | Скачаиваем")
+
+                import subprocess
+
+                subprocess.run(["wget", "-P", TMP_DIR, f"https://huggingface.co/datasets/{REPO_ID}/resolve/main/{last_file}"])
 
             with open(p, "r", encoding="utf-8") as f:
                 data = json.load(f)
+                print(f"[yt-dlp] Загружена data из {last_file}")
                 # Считаем количество видео (исключаем служебные ключи)
                 video_count = sum(1 for k, v in data.items() if k != "_metadata" and isinstance(v, dict))
                 
                 if video_count < DATA_FILE_SIZE:
                     # Используем существующий файл
+                    print(f"[yt-dlp] Данных в файле {video_count} < {DATA_FILE_SIZE} | Дособираем")
                     return p
                 else:
+                    print(f"[yt-dlp] Данных в файле {video_count} >= {DATA_FILE_SIZE} | Загружаем в HF и удаляем локально")
+
                     upload_file(
                         path_or_fileobj=p,
                         path_in_repo=last_file,
@@ -201,9 +214,10 @@ def get_next_data_file_path() -> str:
             filename = f"data_{date_str}.json"
         else:
             filename = f"data_{date_str}_{counter}.json"
-        
+
         p = os.path.join(TMP_DIR, filename)
         if not os.path.exists(p):
+            print(f"[yt-dlp] Создали новый файл: {filename}")
             return p
         counter += 1
 
@@ -237,6 +251,8 @@ def save_data_file(file_path: str, data: Dict[str, Any]) -> None:
         file_path: Путь к файлу данных
         data: Словарь с данными
     """
+    global lcdt
+
     try:
         # Обновляем метаданные
         if "_metadata" not in data:
@@ -251,13 +267,14 @@ def save_data_file(file_path: str, data: Dict[str, Any]) -> None:
         fname = file_path.split("/")[-1]
 
         if lcdt:
-            if t - lcdt > 150:
+            if t - lcdt > 10:
 
                 upload_file(
                     path_or_fileobj=file_path,
                     path_in_repo=fname,
                     repo_id=REPO_ID,
-                    repo_type="dataset"
+                    repo_type="dataset",
+                    token=TOKEN
                 )
 
                 lcdt = t
@@ -293,7 +310,7 @@ def process_videos(
     Returns:
         Кортеж (processed_ids, current_data_file, current_data)
     """
-    batch_size = 20  
+    batch_size = 5  
     processed_count = 0
     
     for i, video_id in enumerate(video_ids_to_process):
